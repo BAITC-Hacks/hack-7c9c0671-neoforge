@@ -16,13 +16,19 @@
         <span class="brand-mark" aria-hidden="true">Q</span>
         <span>QazMeeting <b>AI</b></span>
       </a>
-      <div class="nav-meta"><span class="privacy-dot"></span>On-premise · данные остаются локально</div>
+      <div class="nav-actions">
+        <a href="#upload-title">Новый протокол</a>
+        <a href="#history-title">История</a>
+        <span class="nav-meta"><span class="privacy-dot"></span>Данные остаются локально</span>
+        <button id="theme-toggle" class="theme-toggle" type="button" aria-label="Переключить тему" title="Переключить тему">☾</button>
+      </div>
     </nav>
     <div class="hero-content shell" id="top">
       <div>
         <span class="eyebrow">AI-ассистент секретаря</span>
         <h1>Из разговора — в<br><span>контролируемые поручения</span></h1>
         <p>Распознаём русскую, казахскую и смешанную речь, фиксируем ответственных и сроки, формируем проверяемый протокол.</p>
+        <div class="hero-trust"><span>RU + KZ</span><span>Без облака</span><span>PDF · DOCX · JSON</span></div>
       </div>
       <div class="hero-flow" aria-label="Этапы обработки">
         <div><b>01</b><span>Аудио</span></div><i></i><div><b>02</b><span>Анализ</span></div><i></i><div><b>03</b><span>Протокол</span></div>
@@ -43,6 +49,11 @@
           <strong id="file-label">Перетащите аудио сюда</strong>
           <span>или нажмите для выбора · MP3, WAV, M4A, OGG · до 100 МБ</span>
         </label>
+        <div id="selected-file" class="selected-file" hidden>
+          <div class="file-type" aria-hidden="true">♫</div>
+          <div><strong id="selected-file-name"></strong><span id="selected-file-meta"></span></div>
+          <button id="clear-file" type="button" aria-label="Удалить выбранный файл">×</button>
+        </div>
         <div class="form-grid">
           <label class="field"><span>Название протокола</span><input name="title" value="Протокол совещания" maxlength="150"></label>
           <label class="field"><span>Имена говорящих <small>необязательно, JSON</small></span><input name="speakers" placeholder='{"SPEAKER_00":"Асхат Ерланович"}'></label>
@@ -57,6 +68,7 @@
         <p>Проверьте полный сценарий на предоставленных эталонах.</p>
         <div class="demo-buttons"><button class="demo-card" type="button" data-demo="1"><b>Совещание №1</b><span>Химия и безопасность</span><i>→</i></button><button class="demo-card" type="button" data-demo="2"><b>Совещание №2</b><span>Оперативные показатели</span><i>→</i></button></div>
         <div id="health" class="health skeleton">Проверяем компоненты…</div>
+        <div id="dashboard" class="dashboard-mini" aria-label="Сводка поручений"><div><b>—</b><span>Поручений</span></div><div><b>—%</b><span>Выполнено</span></div><div><b>—</b><span>На проверку</span></div></div>
       </section>
       <section class="panel history-panel" aria-labelledby="history-title">
         <div class="section-heading compact"><div><span class="section-kicker">Рабочая область</span><h2 id="history-title">Последние протоколы</h2></div><button class="icon-button" id="refresh-history" type="button" title="Обновить список" aria-label="Обновить список">↻</button></div>
@@ -75,8 +87,9 @@
         <label class="field summary-field"><span>Краткое саммари <small>один пункт на строку</small></span><textarea id="summary" rows="4"></textarea></label>
       </div>
       <div class="actions-header"><div><h3>Поручения</h3><p>Проверьте формулировки, ответственных и сроки.</p></div><button class="button secondary" id="add-action" type="button">＋ Добавить</button></div>
+      <div class="action-filters"><label><span aria-hidden="true">⌕</span><input id="action-search" type="search" placeholder="Поиск по поручениям и ответственным"></label><select id="status-filter" aria-label="Фильтр по статусу"><option value="all">Все статусы</option><option value="draft">Черновик</option><option value="in_progress">В работе</option><option value="done">Выполнено</option><option value="review">Требует проверки</option></select><span id="filter-count"></span></div>
       <div id="actions" class="action-list"></div>
-      <div class="savebar"><div id="save-status" class="save-message" role="status"></div><button class="button primary" id="save-report" type="button"><span>Сохранить изменения</span><b aria-hidden="true">✓</b></button></div>
+      <div class="savebar"><div class="save-state"><span id="dirty-indicator" class="dirty-indicator" aria-hidden="true"></span><div id="save-status" class="save-message" role="status"></div></div><button class="button primary" id="save-report" type="button"><span>Сохранить изменения</span><b aria-hidden="true">✓</b></button></div>
       <details class="transcript"><summary><span>Транскрипт совещания</span><small id="transcript-count"></small></summary><div id="transcript"></div></details>
     </section>
   </main>

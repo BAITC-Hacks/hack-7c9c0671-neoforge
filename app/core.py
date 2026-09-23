@@ -4,8 +4,9 @@ from __future__ import annotations
 import re
 import subprocess
 import tempfile
+import uuid
 from collections import Counter
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from datetime import datetime
 from pathlib import Path
 from xml.sax.saxutils import escape
@@ -52,6 +53,7 @@ class Action:
     start: float | None = None
     needs_review: bool = False
     status: str = "draft"
+    id: str = field(default_factory=lambda: uuid.uuid4().hex)
 
 
 def _tidy(value: str) -> str:
@@ -198,6 +200,7 @@ def make_report(segments: list[Segment], title: str) -> dict:
         "segments": [asdict(segment) for segment in segments],
         "stats": {"speakers": len({s.speaker for s in segments if s.speaker != "UNKNOWN"}), "segments": len(segments), "actions": len(actions), "needs_review": sum(action.needs_review for action in actions)},
         "review_required": True,
+        "revision": 1,
     }
 
 

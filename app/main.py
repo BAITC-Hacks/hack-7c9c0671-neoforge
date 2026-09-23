@@ -6,6 +6,7 @@ import re
 import shutil
 import uuid
 from pathlib import Path
+from threading import RLock
 from typing import Literal
 
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
@@ -20,11 +21,13 @@ OUT = ROOT / "outputs"
 EXAMPLES = ROOT / "examples"
 OUT.mkdir(exist_ok=True)
 MAX_UPLOAD_BYTES = 100 * 1024 * 1024
+REPORT_WRITE_LOCK = RLock()
 app = FastAPI(title="Meeting Assistant", version="1.0.0", description="On-premise meeting protocol prototype")
 app.mount("/static", StaticFiles(directory=ROOT / "app" / "static"), name="static")
 
 
 class ActionUpdate(BaseModel):
+    id: str = Field(pattern=r"^[a-f0-9]{32}$")
     task: str = Field(min_length=2, max_length=500)
     responsible: str = Field(min_length=1, max_length=120)
     deadline: str = Field(min_length=1, max_length=120)
@@ -33,6 +36,7 @@ class ActionUpdate(BaseModel):
 
 
 class ReportUpdate(BaseModel):
+    revision: int = Field(ge=1)
     title: str = Field(min_length=2, max_length=150)
     summary: list[str] = Field(default_factory=list, max_length=12)
     actions: list[ActionUpdate] = Field(default_factory=list, max_length=100)
@@ -47,16 +51,17 @@ def write_report(report: dict, target: Path) -> None:
     json_temp = target / "report.json.tmp"
     docx_temp = target / "report.docx.tmp"
     pdf_temp = target / "report.pdf.tmp"
-    try:
-        json_temp.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
-        export_docx(report, docx_temp)
-        export_pdf(report, pdf_temp)
-        json_temp.replace(target / "report.json")
-        docx_temp.replace(target / "report.docx")
-        pdf_temp.replace(target / "report.pdf")
-    finally:
-        for temporary in (json_temp, docx_temp, pdf_temp):
-            temporary.unlink(missing_ok=True)
+    with REPORT_WRITE_LOCK:
+        try:
+            json_temp.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
+            export_docx(report, docx_temp)
+            export_pdf(report, pdf_temp)
+            json_temp.replace(target / "report.json")
+            docx_temp.replace(target / "report.docx")
+            pdf_temp.replace(target / "report.pdf")
+        finally:
+            for temporary in (json_temp, docx_temp, pdf_temp):
+                temporary.unlink(missing_ok=True)
 
 
 def _report_path(ident: str) -> Path:
@@ -70,7 +75,14 @@ def _report_path(ident: str) -> Path:
 
 def _load_report(ident: str) -> dict:
     try:
-        return json.loads(_report_path(ident).read_text(encoding="utf-8"))
+        report = json.loads(_report_path(ident).read_text(encoding="utf-8"))
+        report.setdefault("revision", 1)
+        for index, action in enumerate(report.setdefault("actions", [])):
+            legacy_id = uuid.uuid5(uuid.NAMESPACE_URL, f"{ident}:{index}:{action.get('task', '')}").hex
+            action.setdefault("id", legacy_id)
+            action.setdefault("status", "draft")
+            action.setdefault("needs_review", True)
+        return report
     except json.JSONDecodeError as exc:
         raise HTTPException(500, "Stored report is damaged") from exc
 
@@ -98,7 +110,33 @@ def index() -> str:
 def health() -> dict:
     asr = Path(os.getenv("ASR_MODEL_DIR", "models/faster-whisper-small"))
     diarization = Path(os.getenv("DIARIZATION_MODEL_DIR", "models/pyannote-speaker-diarization"))
-    return {"status": "ok", "asr_model": asr.is_dir(), "diarization_model": diarization.is_dir(), "demo_available": True}
+    return {
+        "status": "ok",
+        "asr_model": (asr / "model.bin").is_file(),
+        "diarization_model": diarization.is_dir() and any(diarization.glob("*.yaml")),
+        "ffmpeg": shutil.which("ffmpeg") is not None,
+        "demo_available": True,
+    }
+
+
+@app.get("/dashboard")
+def dashboard() -> dict:
+    totals = {"reports": 0, "actions": 0, "draft": 0, "in_progress": 0, "done": 0, "needs_review": 0}
+    for path in OUT.glob("*/report.json"):
+        if not re.fullmatch(r"[a-f0-9]{32}", path.parent.name):
+            continue
+        try:
+            report = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            continue
+        totals["reports"] += 1
+        for action in report.get("actions", []):
+            totals["actions"] += 1
+            status = action.get("status", "draft")
+            totals[status if status in ("draft", "in_progress", "done") else "draft"] += 1
+            totals["needs_review"] += bool(action.get("needs_review", True))
+    totals["completion_percent"] = round(totals["done"] * 100 / totals["actions"]) if totals["actions"] else 0
+    return totals
 
 
 @app.get("/reports")
@@ -124,20 +162,24 @@ def get_report(ident: str) -> dict:
 @app.put("/reports/{ident}")
 def update_report(ident: str, update: ReportUpdate) -> dict:
     """Save secretary-reviewed fields while preserving evidence and transcript."""
-    report = _load_report(ident)
-    existing = report.get("actions", [])
-    actions: list[dict] = []
-    for index, action_update in enumerate(update.actions):
-        values = action_update.model_dump() if hasattr(action_update, "model_dump") else action_update.dict()
-        preserved = existing[index] if index < len(existing) else {}
-        actions.append({**preserved, **values})
-    report["title"] = update.title.strip()
-    report["summary"] = [item.strip() for item in update.summary if item.strip()]
-    report["actions"] = actions
-    report["review_required"] = any(action["needs_review"] for action in actions)
-    report["stats"] = {**report.get("stats", {}), "actions": len(actions), "needs_review": sum(action["needs_review"] for action in actions), "done": sum(action["status"] == "done" for action in actions)}
-    write_report(report, _report_path(ident).parent)
-    return {"id": ident, "report": report}
+    with REPORT_WRITE_LOCK:
+        report = _load_report(ident)
+        if update.revision != report["revision"]:
+            raise HTTPException(409, "Report changed in another window. Reload it before saving.")
+        existing_by_id = {action["id"]: action for action in report.get("actions", [])}
+        actions: list[dict] = []
+        for action_update in update.actions:
+            values = action_update.model_dump() if hasattr(action_update, "model_dump") else action_update.dict()
+            preserved = existing_by_id.get(values["id"], {})
+            actions.append({**preserved, **values})
+        report["title"] = update.title.strip()
+        report["summary"] = [item.strip() for item in update.summary if item.strip()]
+        report["actions"] = actions
+        report["revision"] += 1
+        report["review_required"] = any(action["needs_review"] for action in actions)
+        report["stats"] = {**report.get("stats", {}), "actions": len(actions), "needs_review": sum(action["needs_review"] for action in actions), "draft": sum(action["status"] == "draft" for action in actions), "in_progress": sum(action["status"] == "in_progress" for action in actions), "done": sum(action["status"] == "done" for action in actions)}
+        write_report(report, _report_path(ident).parent)
+        return {"id": ident, "report": report}
 
 
 @app.post("/demo/{meeting_id}")

@@ -95,6 +95,21 @@ class MeetingAssistantApiTests(unittest.TestCase):
         self.assertEqual(response.status_code, 400)
         self.assertIn("does not match", response.json()["detail"])
 
+    def test_upload_rejects_blank_title_and_invalid_speaker_map(self):
+        wav_header = b"RIFF" + (36).to_bytes(4, "little") + b"WAVEfmt " + b"\x00" * 32
+        blank = self.client.post(
+            "/process",
+            data={"title": "   ", "speakers": "{}"},
+            files={"audio": ("meeting.wav", wav_header, "audio/wav")},
+        )
+        invalid_map = self.client.post(
+            "/process",
+            data={"title": "Встреча", "speakers": "[]"},
+            files={"audio": ("meeting.wav", wav_header, "audio/wav")},
+        )
+        self.assertEqual(blank.status_code, 400)
+        self.assertEqual(invalid_map.status_code, 400)
+
     def test_audio_processing_job_completes_and_exposes_report(self):
         wav_header = b"RIFF" + (36).to_bytes(4, "little") + b"WAVEfmt " + b"\x00" * 32
         with patch.object(main, "transcribe", return_value=[]), patch.object(main, "diarize", return_value=[]):

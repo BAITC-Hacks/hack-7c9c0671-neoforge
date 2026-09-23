@@ -301,6 +301,7 @@ async function saveReport() {
 
 $('#upload').addEventListener('submit', async event => {
   event.preventDefault();
+  if (!canReplaceDraft()) return;
   const data = new FormData(event.currentTarget);
   showLoading('Обрабатываем запись', 'ASR, диаризация и извлечение поручений');
   try {

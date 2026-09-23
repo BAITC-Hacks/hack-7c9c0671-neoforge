@@ -7,7 +7,7 @@ import shutil
 import uuid
 from datetime import datetime
 from pathlib import Path
-from threading import RLock
+from threading import RLock, Semaphore
 from typing import Literal
 
 from fastapi import BackgroundTasks, FastAPI, File, Form, HTTPException, Query, Request, UploadFile
@@ -24,6 +24,7 @@ EXAMPLES = ROOT / "examples"
 OUT.mkdir(exist_ok=True)
 MAX_UPLOAD_BYTES = 100 * 1024 * 1024
 REPORT_WRITE_LOCK = RLock()
+AUDIO_JOB_SLOT = Semaphore(1)
 app = FastAPI(title="Meeting Assistant", version="1.0.0", description="On-premise meeting protocol prototype")
 app.add_middleware(GZipMiddleware, minimum_size=1000)
 app.mount("/static", StaticFiles(directory=ROOT / "app" / "static"), name="static")
@@ -102,19 +103,20 @@ def _write_job(ident: str, **values) -> dict:
 def _run_audio_job(ident: str, input_path: Path, title: str, mapping: dict[str, str]) -> None:
     target = OUT / ident
     try:
-        _write_job(ident, status="processing", stage="transcription", progress=20)
-        segments = transcribe(input_path, Path(os.getenv("ASR_MODEL_DIR", "models/faster-whisper-small")))
-        _write_job(ident, stage="diarization", progress=55)
-        segments = diarize(segments, input_path, Path(os.getenv("DIARIZATION_MODEL_DIR", "models/pyannote-speaker-diarization")))
-        for segment in segments:
-            segment.speaker = mapping.get(segment.speaker, segment.speaker)
-        _write_job(ident, stage="report", progress=80)
-        report = make_report(segments, title)
-        report["source"] = "local_audio"
-        report["schema_version"] = 2
-        report["updated_at"] = report["created_at"]
-        write_report(report, target)
-        _write_job(ident, status="completed", stage="completed", progress=100, report_id=ident)
+        with AUDIO_JOB_SLOT:
+            _write_job(ident, status="processing", stage="transcription", progress=20)
+            segments = transcribe(input_path, Path(os.getenv("ASR_MODEL_DIR", "models/faster-whisper-small")))
+            _write_job(ident, stage="diarization", progress=55)
+            segments = diarize(segments, input_path, Path(os.getenv("DIARIZATION_MODEL_DIR", "models/pyannote-speaker-diarization")))
+            for segment in segments:
+                segment.speaker = mapping.get(segment.speaker, segment.speaker)
+            _write_job(ident, stage="report", progress=80)
+            report = make_report(segments, title)
+            report["source"] = "local_audio"
+            report["schema_version"] = 2
+            report["updated_at"] = report["created_at"]
+            write_report(report, target)
+            _write_job(ident, status="completed", stage="completed", progress=100, report_id=ident)
     except Exception as exc:
         shutil.rmtree(target, ignore_errors=True)
         _write_job(ident, status="failed", stage="failed", progress=100, error=_safe_error(exc))

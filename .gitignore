@@ -1,0 +1,15 @@
+models/
+outputs/
+.venv/
+__pycache__/
+*.mp3
+*.wav
+.env
+.env.*
+!.env.example
+.venv/
+venv/
+__pycache__/
+*.pyc
+node_modules/
+.idea/

@@ -69,6 +69,39 @@ class MeetingAssistantApiTests(unittest.TestCase):
     def test_invalid_report_id_is_rejected(self):
         self.assertEqual(self.client.get("/reports/not-safe").status_code, 404)
 
+    def test_response_security_headers_and_request_id(self):
+        response = self.client.get("/health", headers={"X-Request-ID": "test-request-42"})
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.headers["x-request-id"], "test-request-42")
+        self.assertEqual(response.headers["x-content-type-options"], "nosniff")
+        self.assertIn(response.json()["status"], ("ready", "degraded"))
+
+    def test_report_search_and_pagination(self):
+        self.client.post("/demo/1")
+        self.client.post("/demo/2")
+        self.assertEqual(len(self.client.get("/reports?limit=1").json()), 1)
+        found = self.client.get("/reports?q=%E2%84%962").json()
+        self.assertEqual(len(found), 1)
+        self.assertEqual(found[0]["title"], "Совещание №2")
+        self.assertIn("revision", found[0])
+
+    def test_upload_rejects_spoofed_audio_before_models_run(self):
+        response = self.client.post(
+            "/process",
+            data={"title": "Проверка файла", "speakers": "{}"},
+            files={"audio": ("fake.mp3", b"this is not audio", "audio/mpeg")},
+        )
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("does not match", response.json()["detail"])
+
+    def test_duplicate_action_ids_are_rejected(self):
+        created = self.client.post("/demo/1").json()
+        report = created["report"]
+        duplicate = {key: report["actions"][0][key] for key in ("id", "task", "responsible", "deadline", "status", "needs_review")}
+        payload = {"revision": report["revision"], "title": report["title"], "summary": [], "actions": [duplicate, duplicate]}
+        response = self.client.put(f"/reports/{created['id']}", json=payload)
+        self.assertEqual(response.status_code, 400)
+
     def test_frontend_and_static_assets_are_available(self):
         page = self.client.get("/")
         self.assertEqual(page.status_code, 200)

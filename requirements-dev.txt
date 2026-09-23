@@ -1,2 +1,2 @@
 -r requirements.txt
-httpx2>=2,<3
+httpx>=0.27,<1

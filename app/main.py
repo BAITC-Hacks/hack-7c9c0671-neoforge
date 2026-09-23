@@ -5,11 +5,14 @@ import os
 import re
 import shutil
 import uuid
+from datetime import datetime
 from pathlib import Path
 from threading import RLock
 from typing import Literal
 
-from fastapi import FastAPI, File, Form, HTTPException, UploadFile
+from fastapi import FastAPI, File, Form, HTTPException, Query, Request, UploadFile
+from fastapi.concurrency import run_in_threadpool
+from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.responses import FileResponse, HTMLResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
@@ -23,7 +26,19 @@ OUT.mkdir(exist_ok=True)
 MAX_UPLOAD_BYTES = 100 * 1024 * 1024
 REPORT_WRITE_LOCK = RLock()
 app = FastAPI(title="Meeting Assistant", version="1.0.0", description="On-premise meeting protocol prototype")
+app.add_middleware(GZipMiddleware, minimum_size=1000)
 app.mount("/static", StaticFiles(directory=ROOT / "app" / "static"), name="static")
+
+
+@app.middleware("http")
+async def response_headers(request: Request, call_next):
+    request_id = re.sub(r"[^A-Za-z0-9._-]", "", request.headers.get("x-request-id", ""))[:128] or uuid.uuid4().hex
+    response = await call_next(request)
+    response.headers["X-Request-ID"] = request_id
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    response.headers["Referrer-Policy"] = "no-referrer"
+    response.headers["Permissions-Policy"] = "camera=(), microphone=(), geolocation=()"
+    return response
 
 
 class ActionUpdate(BaseModel):
@@ -44,6 +59,22 @@ class ReportUpdate(BaseModel):
 
 def _safe_error(exc: Exception) -> str:
     return str(exc) if isinstance(exc, (FileNotFoundError, RuntimeError)) else "Processing failed. Check local models and server logs."
+
+
+def _now() -> str:
+    return datetime.now().astimezone().isoformat(timespec="seconds")
+
+
+def _looks_like_audio(path: Path, suffix: str) -> bool:
+    with path.open("rb") as stream:
+        header = stream.read(16)
+    checks = {
+        ".wav": lambda value: value.startswith(b"RIFF") and value[8:12] == b"WAVE",
+        ".ogg": lambda value: value.startswith(b"OggS"),
+        ".m4a": lambda value: len(value) >= 12 and value[4:8] == b"ftyp",
+        ".mp3": lambda value: value.startswith(b"ID3") or (len(value) >= 2 and value[0] == 0xFF and value[1] & 0xE0 == 0xE0),
+    }
+    return bool(header) and checks[suffix](header)
 
 
 def write_report(report: dict, target: Path) -> None:
@@ -94,6 +125,8 @@ def _create_result(segments, title: str, source: str) -> dict:
     try:
         report = make_report(segments, title[:150])
         report["source"] = source
+        report["schema_version"] = 2
+        report["updated_at"] = report["created_at"]
         write_report(report, target)
         return {"id": ident, "report": report}
     except Exception:
@@ -110,12 +143,17 @@ def index() -> str:
 def health() -> dict:
     asr = Path(os.getenv("ASR_MODEL_DIR", "models/faster-whisper-small"))
     diarization = Path(os.getenv("DIARIZATION_MODEL_DIR", "models/pyannote-speaker-diarization"))
+    ffmpeg = shutil.which("ffmpeg") is not None
+    asr_ready = (asr / "model.bin").is_file()
+    diarization_ready = diarization.is_dir() and any(diarization.glob("*.yaml"))
     return {
-        "status": "ok",
+        "status": "ready" if asr_ready and diarization_ready and ffmpeg else "degraded",
+        "version": app.version,
         "asr_model": (asr / "model.bin").is_file(),
-        "diarization_model": diarization.is_dir() and any(diarization.glob("*.yaml")),
-        "ffmpeg": shutil.which("ffmpeg") is not None,
+        "diarization_model": diarization_ready,
+        "ffmpeg": ffmpeg,
         "demo_available": True,
+        "storage_writable": os.access(OUT, os.W_OK),
     }
 
 
@@ -140,7 +178,7 @@ def dashboard() -> dict:
 
 
 @app.get("/reports")
-def reports() -> list[dict]:
+def reports(limit: int = Query(50, ge=1, le=100), offset: int = Query(0, ge=0), q: str = Query("", max_length=100)) -> list[dict]:
     """Return lightweight metadata for the local review dashboard."""
     items: list[dict] = []
     for path in OUT.glob("*/report.json"):
@@ -148,10 +186,13 @@ def reports() -> list[dict]:
             continue
         try:
             report = json.loads(path.read_text(encoding="utf-8"))
-            items.append({"id": path.parent.name, "title": report.get("title", "Протокол"), "created_at": report.get("created_at", ""), "source": report.get("source", "unknown"), "stats": report.get("stats", {})})
+            title = report.get("title", "Протокол")
+            if q and q.casefold() not in title.casefold():
+                continue
+            items.append({"id": path.parent.name, "title": title, "created_at": report.get("created_at", ""), "updated_at": report.get("updated_at", report.get("created_at", "")), "revision": report.get("revision", 1), "source": report.get("source", "unknown"), "stats": report.get("stats", {})})
         except (OSError, json.JSONDecodeError):
             continue
-    return sorted(items, key=lambda item: item["created_at"], reverse=True)[:50]
+    return sorted(items, key=lambda item: item["updated_at"], reverse=True)[offset:offset + limit]
 
 
 @app.get("/reports/{ident}")
@@ -166,6 +207,11 @@ def update_report(ident: str, update: ReportUpdate) -> dict:
         report = _load_report(ident)
         if update.revision != report["revision"]:
             raise HTTPException(409, "Report changed in another window. Reload it before saving.")
+        action_ids = [action.id for action in update.actions]
+        if len(action_ids) != len(set(action_ids)):
+            raise HTTPException(400, "Action IDs must be unique")
+        if not update.title.strip():
+            raise HTTPException(400, "Title cannot be blank")
         existing_by_id = {action["id"]: action for action in report.get("actions", [])}
         actions: list[dict] = []
         for action_update in update.actions:
@@ -176,6 +222,8 @@ def update_report(ident: str, update: ReportUpdate) -> dict:
         report["summary"] = [item.strip() for item in update.summary if item.strip()]
         report["actions"] = actions
         report["revision"] += 1
+        report["schema_version"] = 2
+        report["updated_at"] = _now()
         report["review_required"] = any(action["needs_review"] for action in actions)
         report["stats"] = {**report.get("stats", {}), "actions": len(actions), "needs_review": sum(action["needs_review"] for action in actions), "draft": sum(action["status"] == "draft" for action in actions), "in_progress": sum(action["status"] == "in_progress" for action in actions), "done": sum(action["status"] == "done" for action in actions)}
         write_report(report, _report_path(ident).parent)
@@ -198,9 +246,12 @@ async def process(audio: UploadFile = File(...), title: str = Form("Проток
     suffix = Path(audio.filename or "").suffix.lower()
     if suffix not in (".mp3", ".wav", ".m4a", ".ogg"):
         raise HTTPException(400, "Supported formats: MP3, WAV, M4A, OGG")
+    title = title.strip()
+    if len(title) < 2 or len(title) > 150:
+        raise HTTPException(400, "Title must contain 2 to 150 characters")
     try:
         mapping = json.loads(speakers or "{}")
-        if not isinstance(mapping, dict) or not all(isinstance(k, str) and isinstance(v, str) for k, v in mapping.items()):
+        if not isinstance(mapping, dict) or len(mapping) > 100 or not all(isinstance(k, str) and isinstance(v, str) and 1 <= len(k) <= 80 and 1 <= len(v.strip()) <= 120 for k, v in mapping.items()):
             raise ValueError
     except (ValueError, json.JSONDecodeError) as exc:
         raise HTTPException(400, "speakers must be a string-to-string JSON object") from exc
@@ -216,13 +267,17 @@ async def process(audio: UploadFile = File(...), title: str = Form("Проток
                 if total > MAX_UPLOAD_BYTES:
                     raise HTTPException(413, "Maximum upload size is 100 MB")
                 stream.write(chunk)
-        segments = transcribe(input_path, Path(os.getenv("ASR_MODEL_DIR", "models/faster-whisper-small")))
-        segments = diarize(segments, input_path, Path(os.getenv("DIARIZATION_MODEL_DIR", "models/pyannote-speaker-diarization")))
+        if not _looks_like_audio(input_path, suffix):
+            raise HTTPException(400, "File content does not match its audio extension")
+        segments = await run_in_threadpool(transcribe, input_path, Path(os.getenv("ASR_MODEL_DIR", "models/faster-whisper-small")))
+        segments = await run_in_threadpool(diarize, segments, input_path, Path(os.getenv("DIARIZATION_MODEL_DIR", "models/pyannote-speaker-diarization")))
         for segment in segments:
             segment.speaker = mapping.get(segment.speaker, segment.speaker)
-        report = make_report(segments, title[:150])
+        report = make_report(segments, title)
         report["source"] = "local_audio"
-        write_report(report, target)
+        report["schema_version"] = 2
+        report["updated_at"] = report["created_at"]
+        await run_in_threadpool(write_report, report, target)
         return {"id": ident, "report": report}
     except HTTPException:
         shutil.rmtree(target, ignore_errors=True)

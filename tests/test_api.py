@@ -57,6 +57,16 @@ class MeetingAssistantApiTests(unittest.TestCase):
         self.assertEqual(dashboard.json()["reports"], 1)
         self.assertGreater(dashboard.json()["actions"], 0)
 
+    def test_overdue_status_is_saved_and_counted(self):
+        created = self.client.post("/demo/1").json()
+        report = created["report"]
+        report["actions"][0]["status"] = "overdue"
+        payload = {"revision": report["revision"], "title": report["title"], "summary": report["summary"], "actions": [{key: action[key] for key in ("id", "task", "responsible", "deadline", "status", "needs_review")} for action in report["actions"]]}
+        saved = self.client.put(f"/reports/{created['id']}", json=payload)
+        self.assertEqual(saved.status_code, 200)
+        self.assertEqual(saved.json()["report"]["stats"]["overdue"], 1)
+        self.assertEqual(self.client.get("/dashboard").json()["overdue"], 1)
+
     def test_action_evidence_follows_stable_id_after_reorder(self):
         created = self.client.post("/demo/1").json()
         report = created["report"]

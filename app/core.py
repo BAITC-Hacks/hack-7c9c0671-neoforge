@@ -205,14 +205,21 @@ def make_report(segments: list[Segment], title: str) -> dict:
 
 
 def _action_state(action: dict) -> str:
-    labels = {"draft": "Черновик", "in_progress": "В работе", "done": "Выполнено"}
+    labels = {"draft": "Черновик", "in_progress": "В работе", "overdue": "Просрочено", "done": "Выполнено"}
     value = labels.get(action.get("status", "draft"), "Черновик")
     return f"{value} · проверить" if action.get("needs_review", True) else value
 
 
+def _segment_text(segment: dict) -> str:
+    timing = f"[{segment['start']:.1f}-{segment['end']:.1f}] " if segment["start"] or segment["end"] else ""
+    return f"{timing}{segment['speaker']}: {segment['text']}"
+
+
 def export_docx(report: dict, path: Path) -> None:
     from docx import Document
-    from docx.shared import Cm, Pt
+    from docx.oxml import OxmlElement
+    from docx.oxml.ns import qn
+    from docx.shared import Cm, Pt, RGBColor
 
     doc = Document()
     section = doc.sections[0]
@@ -220,6 +227,11 @@ def export_docx(report: dict, path: Path) -> None:
     section.left_margin = section.right_margin = Cm(1.8)
     doc.styles["Normal"].font.name = "Arial"
     doc.styles["Normal"].font.size = Pt(9.5)
+    doc.styles["Title"].font.color.rgb = RGBColor(23, 51, 47)
+    title_properties = doc.styles["Title"].element.get_or_add_pPr()
+    title_border = title_properties.find(qn("w:pBdr"))
+    if title_border is not None:
+        title_properties.remove(title_border)
     doc.add_heading(report["title"], 0)
     doc.add_paragraph("ЧЕРНОВИК · Требуется проверка секретарём", style="Subtitle")
     doc.add_heading("Краткое саммари", 1)
@@ -230,15 +242,18 @@ def export_docx(report: dict, path: Path) -> None:
     doc.add_heading("Поручения", 1)
     table = doc.add_table(rows=1, cols=4)
     table.style = "Table Grid"
+    table.rows[0]._tr.get_or_add_trPr().append(OxmlElement("w:tblHeader"))
     for cell, text in zip(table.rows[0].cells, ["Поручение", "Ответственный", "Срок", "Статус"]):
         cell.text = text
     for action in report["actions"]:
         values = [action["task"], action["responsible"], action["deadline"], _action_state(action)]
-        for cell, value in zip(table.add_row().cells, values):
+        row = table.add_row()
+        row._tr.get_or_add_trPr().append(OxmlElement("w:cantSplit"))
+        for cell, value in zip(row.cells, values):
             cell.text = str(value)
     doc.add_heading("Транскрипт", 1)
     for segment in report["segments"]:
-        doc.add_paragraph(f"[{segment['start']:.1f}-{segment['end']:.1f}] {segment['speaker']}: {segment['text']}")
+        doc.add_paragraph(_segment_text(segment))
     doc.save(path)
 
 
@@ -287,6 +302,6 @@ def export_pdf(report: dict, path: Path) -> None:
     table = Table(rows, colWidths=[78 * mm, 43 * mm, 34 * mm, 24 * mm], repeatRows=1, hAlign="LEFT")
     table.setStyle(TableStyle([("GRID", (0, 0), (-1, -1), 0.35, colors.HexColor("#CFD8DC")), ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#E0F2F1")), ("VALIGN", (0, 0), (-1, -1), "TOP"), ("LEFTPADDING", (0, 0), (-1, -1), 5), ("RIGHTPADDING", (0, 0), (-1, -1), 5), ("TOPPADDING", (0, 0), (-1, -1), 5), ("BOTTOMPADDING", (0, 0), (-1, -1), 5)]))
     story += [table, Spacer(1, 6 * mm), paragraph("Транскрипт", heading)]
-    story += [paragraph(f"[{segment['start']:.1f}-{segment['end']:.1f}] {segment['speaker']}: {segment['text']}") for segment in report["segments"]]
+    story += [paragraph(_segment_text(segment)) for segment in report["segments"]]
     document = SimpleDocTemplate(str(path), pagesize=A4, leftMargin=15 * mm, rightMargin=15 * mm, topMargin=16 * mm, bottomMargin=18 * mm, title=report["title"])
     document.build(story, onFirstPage=footer, onLaterPages=footer)

@@ -46,7 +46,7 @@ class ActionUpdate(BaseModel):
     task: str = Field(min_length=2, max_length=500)
     responsible: str = Field(min_length=1, max_length=120)
     deadline: str = Field(min_length=1, max_length=120)
-    status: Literal["draft", "in_progress", "done"] = "draft"
+    status: Literal["draft", "in_progress", "overdue", "done"] = "draft"
     needs_review: bool = True
 
 
@@ -206,7 +206,7 @@ def health() -> dict:
 
 @app.get("/dashboard")
 def dashboard() -> dict:
-    totals = {"reports": 0, "actions": 0, "draft": 0, "in_progress": 0, "done": 0, "needs_review": 0}
+    totals = {"reports": 0, "actions": 0, "draft": 0, "in_progress": 0, "overdue": 0, "done": 0, "needs_review": 0}
     for path in OUT.glob("*/report.json"):
         if not re.fullmatch(r"[a-f0-9]{32}", path.parent.name):
             continue
@@ -218,7 +218,7 @@ def dashboard() -> dict:
         for action in report.get("actions", []):
             totals["actions"] += 1
             status = action.get("status", "draft")
-            totals[status if status in ("draft", "in_progress", "done") else "draft"] += 1
+            totals[status if status in ("draft", "in_progress", "overdue", "done") else "draft"] += 1
             totals["needs_review"] += bool(action.get("needs_review", True))
     totals["completion_percent"] = round(totals["done"] * 100 / totals["actions"]) if totals["actions"] else 0
     return totals
@@ -283,7 +283,7 @@ def update_report(ident: str, update: ReportUpdate) -> dict:
         report["schema_version"] = 2
         report["updated_at"] = _now()
         report["review_required"] = any(action["needs_review"] for action in actions)
-        report["stats"] = {**report.get("stats", {}), "actions": len(actions), "needs_review": sum(action["needs_review"] for action in actions), "draft": sum(action["status"] == "draft" for action in actions), "in_progress": sum(action["status"] == "in_progress" for action in actions), "done": sum(action["status"] == "done" for action in actions)}
+        report["stats"] = {**report.get("stats", {}), "actions": len(actions), "needs_review": sum(action["needs_review"] for action in actions), "draft": sum(action["status"] == "draft" for action in actions), "in_progress": sum(action["status"] == "in_progress" for action in actions), "overdue": sum(action["status"] == "overdue" for action in actions), "done": sum(action["status"] == "done" for action in actions)}
         write_report(report, _report_path(ident).parent)
         return {"id": ident, "report": report}
 

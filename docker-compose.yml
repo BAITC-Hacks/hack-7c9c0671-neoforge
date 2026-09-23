@@ -1,0 +1,13 @@
+services:
+  meeting-assistant:
+    build: .
+    ports:
+      - "3000:3000"
+    env_file:
+      - .env
+    environment:
+      HOST: 0.0.0.0
+    volumes:
+      - ./models:/models:ro
+      - ./model-cache:/root/.cache:rw
+    restart: unless-stopped

@@ -1,3 +1,4 @@
+<<<<<<< HEAD
 models/
 outputs/
 .venv/
@@ -13,3 +14,14 @@ __pycache__/
 *.pyc
 node_modules/
 .idea/
+=======
+node_modules/
+build/
+dist/
+coverage/
+.DS_Store
+*.log
+.env*
+!.env.example
+!.env.windows.example
+>>>>>>> 620a53f (Meeting Assistant: рабочий прототип)

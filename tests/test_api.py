@@ -105,7 +105,7 @@ class MeetingAssistantApiTests(unittest.TestCase):
     def test_frontend_and_static_assets_are_available(self):
         page = self.client.get("/")
         self.assertEqual(page.status_code, 200)
-        self.assertIn("QazMeeting AI", page.text)
+        self.assertIn("Meeting Assistant", page.text)
         self.assertEqual(self.client.get("/static/styles.css").status_code, 200)
         self.assertEqual(self.client.get("/static/app.js").status_code, 200)
 

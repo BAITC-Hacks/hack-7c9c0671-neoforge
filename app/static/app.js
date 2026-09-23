@@ -356,7 +356,7 @@ document.addEventListener('keydown', event => {
   }
 });
 
-const savedTheme = localStorage.getItem('qazmeeting-theme');
+const savedTheme = localStorage.getItem('meeting-assistant-theme') || localStorage.getItem('qazmeeting-theme');
 if (savedTheme === 'dark') document.documentElement.dataset.theme = 'dark';
 function syncThemeButton() {
   const dark = document.documentElement.dataset.theme === 'dark';
@@ -366,7 +366,7 @@ function syncThemeButton() {
 $('#theme-toggle').addEventListener('click', () => {
   const dark = document.documentElement.dataset.theme !== 'dark';
   document.documentElement.dataset.theme = dark ? 'dark' : '';
-  localStorage.setItem('qazmeeting-theme', dark ? 'dark' : 'light');
+  localStorage.setItem('meeting-assistant-theme', dark ? 'dark' : 'light');
   syncThemeButton();
 });
 syncThemeButton();

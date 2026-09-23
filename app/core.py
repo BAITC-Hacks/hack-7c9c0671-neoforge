@@ -20,6 +20,8 @@ VERBS = (
     r"дайынд(?:ау|аңдар)|жаса(?:у|ңыздар)|өткіз(?:у|іңіздер)|тексер(?:у|іңіздер)|"
     r"жібер(?:у|іңіздер)|келіс(?:у|іңіздер)|ұйымдастыр(?:у|ыңыздар))"
 )
+FIRST_PERSON = re.compile(r"(?i)\b(?:подготовлю|найду|обновлю|сделаю|запрошу|организуем)\b")
+IMPERATIVE = re.compile(r"(?i)\b(?:подготовьте|проведите|проверьте|организуйте|разберитесь|найдите|ищите|выставляйте|зафиксируйте|пропишите|направьте|обновите|привлеките|свяжитесь|возьмите)\b")
 DEADLINE = re.compile(
     r"(?i)(?:до\s+\d{1,2}\s+[а-яәғқңөұүһё]+|к\s+\d{1,2}\s+[а-яәғқңөұүһё]+|"
     r"до конца недели|на этой неделе|на следующей неделе|текущая неделя|"
@@ -49,6 +51,7 @@ class Action:
     evidence: str
     start: float | None = None
     needs_review: bool = False
+    status: str = "draft"
 
 
 def _tidy(value: str) -> str:
@@ -58,7 +61,7 @@ def _tidy(value: str) -> str:
 def _valid_name(value: str) -> bool:
     stopwords = {"хорошо", "понял", "принято", "согласен", "логично", "отлично"}
     words = value.split()
-    return value.casefold() not in stopwords and bool(words) and all(word[0].isupper() for word in words)
+    return value.casefold() not in stopwords and len(words) >= 2 and all(word[0].isupper() for word in words)
 
 
 def _sentences(text: str) -> list[str]:
@@ -73,19 +76,31 @@ def _sentences(text: str) -> list[str]:
 def extract_actions(segments: list[Segment]) -> list[Action]:
     """Extract conservative candidates and retain the source evidence."""
     result: list[Action] = []
+    previous_speaker: str | None = None
     for seg in segments:
+        last_addressee: str | None = None
         for piece in _sentences(seg.text):
+            if re.match(r"(?i)^(?:первое|второе|третье|четвёртое|пятое)\s*:", piece):
+                last_addressee = None
+            addressed = re.search(r"(" + NAME + r")\s*,", piece)
+            if addressed and _valid_name(addressed.group(1)):
+                last_addressee = addressed.group(1)
             verb = re.search(r"(?i)\b" + VERBS + r"\b", piece)
             if not verb:
                 continue
             explicit = EXPLICIT.search(piece)
             direct = DIRECT.search(piece)
             direct_name = direct.group(1) if direct and _valid_name(direct.group(1)) else None
-            responsible = explicit.group(1) if explicit else direct_name or UNKNOWN
+            speaker_commitment = seg.speaker if FIRST_PERSON.search(piece) and _valid_name(seg.speaker) else None
+            conversational_fallback = previous_speaker if IMPERATIVE.search(piece) and previous_speaker and previous_speaker != seg.speaker and _valid_name(previous_speaker) else None
+            responsible = explicit.group(1) if explicit else direct_name or last_addressee or speaker_commitment or conversational_fallback or UNKNOWN
             deadline = DEADLINE.search(piece)
             task_end = explicit.start() if explicit and explicit.start() > verb.start() else len(piece)
             task = _tidy(piece[verb.start():task_end])[:350]
-            if len(task) < 8:
+            # Kazakh commonly places the verb at the end (SOV), so keep the object phrase too.
+            if len(task) < 12 and verb.start() > len(piece) / 2:
+                task = _tidy(piece.split(",", 1)[-1])[:350]
+            if len(task) < 12:
                 continue
             action = Action(
                 task=task,
@@ -99,6 +114,7 @@ def extract_actions(segments: list[Segment]) -> list[Action]:
             signature = (action.task.casefold(), action.responsible.casefold())
             if not any((a.task.casefold(), a.responsible.casefold()) == signature for a in result):
                 result.append(action)
+        previous_speaker = seg.speaker
     return result
 
 
@@ -185,6 +201,12 @@ def make_report(segments: list[Segment], title: str) -> dict:
     }
 
 
+def _action_state(action: dict) -> str:
+    labels = {"draft": "Черновик", "in_progress": "В работе", "done": "Выполнено"}
+    value = labels.get(action.get("status", "draft"), "Черновик")
+    return f"{value} · проверить" if action.get("needs_review", True) else value
+
+
 def export_docx(report: dict, path: Path) -> None:
     from docx import Document
     from docx.shared import Cm, Pt
@@ -205,10 +227,10 @@ def export_docx(report: dict, path: Path) -> None:
     doc.add_heading("Поручения", 1)
     table = doc.add_table(rows=1, cols=4)
     table.style = "Table Grid"
-    for cell, text in zip(table.rows[0].cells, ["Поручение", "Ответственный", "Срок", "Проверка"]):
+    for cell, text in zip(table.rows[0].cells, ["Поручение", "Ответственный", "Срок", "Статус"]):
         cell.text = text
     for action in report["actions"]:
-        values = [action["task"], action["responsible"], action["deadline"], "Нужна" if action["needs_review"] else "Пройдена"]
+        values = [action["task"], action["responsible"], action["deadline"], _action_state(action)]
         for cell, value in zip(table.add_row().cells, values):
             cell.text = str(value)
     doc.add_heading("Транскрипт", 1)
@@ -255,8 +277,8 @@ def export_pdf(report: dict, path: Path) -> None:
     story = [paragraph(report["title"], title), paragraph("ЧЕРНОВИК · Требуется проверка секретарём"), Spacer(1, 4 * mm), paragraph("Краткое саммари", heading)]
     story += [paragraph("• " + item) for item in report["summary"]] or [paragraph("Ключевые тезисы не выделены автоматически.")]
     story += [paragraph("Поручения", heading)]
-    rows = [[paragraph(value) for value in ["Поручение", "Ответственный", "Срок", "Проверка"]]]
-    rows += [[paragraph(action["task"]), paragraph(action["responsible"]), paragraph(action["deadline"]), paragraph("Нужна" if action["needs_review"] else "Пройдена")] for action in report["actions"]]
+    rows = [[paragraph(value) for value in ["Поручение", "Ответственный", "Срок", "Статус"]]]
+    rows += [[paragraph(action["task"]), paragraph(action["responsible"]), paragraph(action["deadline"]), paragraph(_action_state(action))] for action in report["actions"]]
     if len(rows) == 1:
         rows.append([paragraph("Поручения не выделены"), paragraph("-"), paragraph("-"), paragraph("Нужна")])
     table = Table(rows, colWidths=[78 * mm, 43 * mm, 34 * mm, 24 * mm], repeatRows=1, hAlign="LEFT")

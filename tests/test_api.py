@@ -43,6 +43,13 @@ class MeetingAssistantApiTests(unittest.TestCase):
     def test_invalid_report_id_is_rejected(self):
         self.assertEqual(self.client.get("/reports/not-safe").status_code, 404)
 
+    def test_frontend_and_static_assets_are_available(self):
+        page = self.client.get("/")
+        self.assertEqual(page.status_code, 200)
+        self.assertIn("QazMeeting AI", page.text)
+        self.assertEqual(self.client.get("/static/styles.css").status_code, 200)
+        self.assertEqual(self.client.get("/static/app.js").status_code, 200)
+
 
 if __name__ == "__main__":
     unittest.main()

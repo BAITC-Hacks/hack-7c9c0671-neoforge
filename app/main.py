@@ -10,6 +10,7 @@ from typing import Literal
 
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.responses import FileResponse, HTMLResponse
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 from .core import diarize, export_docx, export_pdf, make_report, reference_segments, transcribe
@@ -20,6 +21,7 @@ EXAMPLES = ROOT / "examples"
 OUT.mkdir(exist_ok=True)
 MAX_UPLOAD_BYTES = 100 * 1024 * 1024
 app = FastAPI(title="Meeting Assistant", version="1.0.0", description="On-premise meeting protocol prototype")
+app.mount("/static", StaticFiles(directory=ROOT / "app" / "static"), name="static")
 
 
 class ActionUpdate(BaseModel):

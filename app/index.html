@@ -1,43 +1,86 @@
 <!doctype html>
 <html lang="ru">
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width,initial-scale=1">
-<title>QazMeeting AI</title>
-<style>
-:root{--ink:#17353a;--muted:#61777b;--teal:#087d75;--paper:#fbfcfa;--line:#dbe6e3;--warn:#fff4dc;--red:#a34040}*{box-sizing:border-box}body{margin:0;background:#edf3f1;color:var(--ink);font:15px/1.5 Inter,Segoe UI,sans-serif}header{background:linear-gradient(125deg,#073b3a,#0b766d);color:#fff;padding:38px max(24px,calc((100vw - 1180px)/2)) 54px}header p{max-width:760px;color:#d5eeeb;margin:7px 0 0}main{max-width:1180px;margin:-26px auto 60px;padding:0 24px}.grid{display:grid;grid-template-columns:1.05fr .95fr;gap:18px}.card{background:var(--paper);border:1px solid var(--line);border-radius:17px;padding:22px;box-shadow:0 14px 40px #17353a12}h1{font-size:32px;margin:0}h2{margin:0 0 8px;font-size:20px}h3{margin:22px 0 8px}label{display:block;color:var(--muted);margin:13px 0 5px}input,select,textarea{width:100%;padding:10px;border:1px solid #bdd0cc;border-radius:8px;background:#fff;color:var(--ink);font:inherit}textarea{min-height:92px;resize:vertical}button,.download{border:0;border-radius:9px;background:var(--teal);color:#fff;padding:11px 15px;font-weight:650;cursor:pointer;text-decoration:none;display:inline-block;margin:12px 7px 0 0}button.secondary{background:#e4efec;color:#15534f}button.danger{background:#f7e9e9;color:var(--red);margin:0;padding:8px 10px}.notice{background:var(--warn);padding:11px 13px;border-radius:9px;color:#6b5323}.status{min-height:24px;color:var(--muted)}#editor{display:none;margin-top:18px}.metrics{display:grid;grid-template-columns:repeat(4,1fr);gap:9px}.metric{background:#eef6f4;border-radius:9px;padding:11px}.metric b{display:block;font-size:21px}.table-wrap{overflow:auto}table{width:100%;border-collapse:collapse;min-width:950px;margin-top:10px}th,td{text-align:left;vertical-align:top;border-bottom:1px solid var(--line);padding:8px 6px}th{color:var(--muted);font-size:11px;text-transform:uppercase}.check{width:auto;margin:12px}.history-item{display:flex;justify-content:space-between;gap:12px;padding:10px 0;border-bottom:1px solid var(--line)}.history-item button{margin:0;padding:7px 11px}.small{font-size:12px;color:var(--muted)}.toolbar{display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap}.success{color:#087d48}.error{color:var(--red)}@media(max-width:800px){.grid{grid-template-columns:1fr}.metrics{grid-template-columns:repeat(2,1fr)}h1{font-size:27px}}
-</style>
-<header><h1>QazMeeting AI</h1><p>Локальное автопротоколирование: транскрипт, говорящие, поручения, сроки, проверка секретарём и экспорт. Аудио не покидает закрытый контур.</p></header>
-<main>
-  <div class="grid">
-    <section class="card"><h2>Обработать аудио</h2><p class="notice">Запись допускается только с уведомлением и согласием участников. Результат всегда создаётся как черновик.</p><form id="upload"><label>Аудиозапись · MP3, WAV, M4A, OGG</label><input name="audio" type="file" accept="audio/*,.m4a" required><label>Название</label><input name="title" value="Протокол совещания"><label>Имена говорящих · JSON, необязательно</label><input name="speakers" placeholder='{"SPEAKER_00":"Асхат Ерланович"}'><button>Создать протокол</button></form></section>
-    <section class="card"><h2>Демо и готовность</h2><p>Полный сценарий можно проверить на предоставленных письменных эталонах без AI-моделей.</p><button class="secondary" onclick="runDemo(1)">Совещание №1</button><button class="secondary" onclick="runDemo(2)">Совещание №2</button><p id="health" class="status">Проверяем сервер…</p><h3>Последние протоколы</h3><div id="history"><span class="small">Загрузка…</span></div></section>
-  </div>
-  <p id="global-status" class="status"></p>
-  <section id="editor" class="card">
-    <div class="toolbar"><h2>Редактор протокола</h2><div id="downloads"></div></div>
-    <label>Название</label><input id="report-title">
-    <div id="metrics" class="metrics" style="margin-top:14px"></div>
-    <label>Краткое саммари · один пункт на строку</label><textarea id="summary"></textarea>
-    <div class="toolbar"><h3>Поручения</h3><button class="secondary" onclick="addAction()">+ Добавить поручение</button></div>
-    <div class="table-wrap"><table><thead><tr><th>Поручение</th><th>Ответственный</th><th>Срок</th><th>Статус</th><th>Проверено</th><th></th></tr></thead><tbody id="actions"></tbody></table></div>
-    <button onclick="saveReport()">Сохранить и обновить файлы</button><span id="save-status" class="status"></span>
-    <details style="margin-top:20px"><summary>Показать транскрипт</summary><div id="transcript"></div></details>
-  </section>
-</main>
-<script>
-let currentId=null,currentReport=null;const globalStatus=document.querySelector('#global-status');
-fetch('/health').then(r=>r.json()).then(x=>document.querySelector('#health').textContent=`ASR: ${x.asr_model?'готов':'нужна модель'} · Диаризация: ${x.diarization_model?'готова':'нужна модель'} · Демо: готово`).catch(()=>document.querySelector('#health').textContent='Сервер недоступен');
-document.querySelector('#upload').onsubmit=e=>{e.preventDefault();request('/process',{method:'POST',body:new FormData(e.target)},'Аудио обрабатывается локально. Это может занять несколько минут…')};
-async function runDemo(id){await request(`/demo/${id}`,{method:'POST'},'Формируем демонстрационный протокол…')}
-async function request(url,options,message){globalStatus.className='status';globalStatus.textContent=message;try{const response=await fetch(url,options),data=await response.json();if(!response.ok)throw Error(data.detail||'Ошибка обработки');render(data);globalStatus.textContent='Черновик готов. Проверьте поля и сохраните изменения.';loadHistory()}catch(error){globalStatus.className='status error';globalStatus.textContent='Ошибка: '+error.message}}
-async function loadHistory(){try{const items=await fetch('/reports').then(r=>r.json());document.querySelector('#history').innerHTML=items.length?items.slice(0,6).map(x=>`<div class="history-item"><div><b>${safe(x.title)}</b><div class="small">${safe(x.created_at||'')}</div></div><button class="secondary" onclick="openReport('${x.id}')">Открыть</button></div>`).join(''):'<span class="small">Протоколов пока нет</span>'}catch{document.querySelector('#history').innerHTML='<span class="small">История недоступна</span>'}}
-async function openReport(id){await request(`/reports/${id}`,{},'Открываем протокол…')}
-function render(data){currentId=data.id;currentReport=data.report;const r=currentReport,s=r.stats||{};document.querySelector('#editor').style.display='block';document.querySelector('#report-title').value=r.title;document.querySelector('#summary').value=(r.summary||[]).join('\n');document.querySelector('#metrics').innerHTML=[['Говорящих',s.speakers||0],['Сегментов',s.segments||0],['Поручений',(r.actions||[]).length],['На проверку',(r.actions||[]).filter(a=>a.needs_review).length]].map(x=>`<div class="metric"><b>${x[1]}</b>${x[0]}</div>`).join('');document.querySelector('#downloads').innerHTML=['pdf','docx','json'].map(x=>`<a class="download" href="/download/${data.id}/${x}">${x.toUpperCase()}</a>`).join('');drawActions();document.querySelector('#transcript').innerHTML=(r.segments||[]).map(s=>`<p><b>[${Number(s.start).toFixed(1)}-${Number(s.end).toFixed(1)}] ${safe(s.speaker)}</b>: ${safe(s.text)}</p>`).join('');document.querySelector('#editor').scrollIntoView({behavior:'smooth'})}
-function drawActions(){document.querySelector('#actions').innerHTML=currentReport.actions.map((a,i)=>`<tr><td><textarea data-i="${i}" data-k="task">${safe(a.task)}</textarea></td><td><input data-i="${i}" data-k="responsible" value="${attr(a.responsible)}"></td><td><input data-i="${i}" data-k="deadline" value="${attr(a.deadline)}"></td><td><select data-i="${i}" data-k="status"><option value="draft" ${a.status==='draft'||!a.status?'selected':''}>Черновик</option><option value="in_progress" ${a.status==='in_progress'?'selected':''}>В работе</option><option value="done" ${a.status==='done'?'selected':''}>Выполнено</option></select></td><td><input class="check" type="checkbox" data-i="${i}" data-k="reviewed" ${a.needs_review?'':'checked'}></td><td><button class="danger" onclick="removeAction(${i})">×</button></td></tr>`).join('')||'<tr><td colspan="6">Поручений нет — добавьте вручную</td></tr>'}
-function syncActions(){document.querySelectorAll('#actions [data-i]').forEach(el=>{const a=currentReport.actions[Number(el.dataset.i)],key=el.dataset.k;if(key==='reviewed')a.needs_review=!el.checked;else a[key]=el.value})}
-function addAction(){syncActions();currentReport.actions.push({task:'Новое поручение',responsible:'Не указан / көрсетілмеген',deadline:'Не указан / көрсетілмеген',status:'draft',needs_review:true});drawActions()}
-function removeAction(i){syncActions();currentReport.actions.splice(i,1);drawActions()}
-async function saveReport(){syncActions();const status=document.querySelector('#save-status');status.className='status';status.textContent='Сохраняем…';const payload={title:document.querySelector('#report-title').value,summary:document.querySelector('#summary').value.split('\n').map(x=>x.trim()).filter(Boolean),actions:currentReport.actions.map(a=>({task:a.task,responsible:a.responsible,deadline:a.deadline,status:a.status||'draft',needs_review:a.needs_review}))};try{const response=await fetch(`/reports/${currentId}`,{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)}),data=await response.json();if(!response.ok)throw Error(formatError(data.detail));render(data);status.className='status success';status.textContent='Сохранено. PDF, DOCX и JSON обновлены.';loadHistory()}catch(error){status.className='status error';status.textContent='Ошибка: '+error.message}}
-function formatError(detail){return Array.isArray(detail)?detail.map(x=>x.msg).join('; '):detail||'Не удалось сохранить'}function safe(v){const n=document.createElement('span');n.textContent=String(v??'');return n.innerHTML}function attr(v){return safe(v).replaceAll('"','&quot;')}loadHistory();
-</script>
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="theme-color" content="#0b625d">
+  <title>QazMeeting AI</title>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='18' fill='%230d7169'/%3E%3Ctext x='18' y='45' font-size='38' font-family='Arial' font-weight='700' fill='white'%3EQ%3C/text%3E%3C/svg%3E">
+  <link rel="stylesheet" href="/static/styles.css">
+  <script src="/static/app.js" defer></script>
+</head>
+<body>
+  <header class="hero">
+    <nav class="nav shell" aria-label="Главная навигация">
+      <a class="brand" href="#top" aria-label="QazMeeting AI — главная">
+        <span class="brand-mark" aria-hidden="true">Q</span>
+        <span>QazMeeting <b>AI</b></span>
+      </a>
+      <div class="nav-meta"><span class="privacy-dot"></span>On-premise · данные остаются локально</div>
+    </nav>
+    <div class="hero-content shell" id="top">
+      <div>
+        <span class="eyebrow">AI-ассистент секретаря</span>
+        <h1>Из разговора — в<br><span>контролируемые поручения</span></h1>
+        <p>Распознаём русскую, казахскую и смешанную речь, фиксируем ответственных и сроки, формируем проверяемый протокол.</p>
+      </div>
+      <div class="hero-flow" aria-label="Этапы обработки">
+        <div><b>01</b><span>Аудио</span></div><i></i><div><b>02</b><span>Анализ</span></div><i></i><div><b>03</b><span>Протокол</span></div>
+      </div>
+    </div>
+  </header>
+
+  <main class="shell workspace">
+    <section class="panel upload-panel" aria-labelledby="upload-title">
+      <div class="section-heading">
+        <div><span class="section-kicker">Новый протокол</span><h2 id="upload-title">Загрузите запись совещания</h2></div>
+        <span class="secure-badge">Локальная обработка</span>
+      </div>
+      <form id="upload">
+        <label class="dropzone" id="dropzone" for="audio-input">
+          <input id="audio-input" name="audio" type="file" accept="audio/*,.m4a" required>
+          <span class="upload-icon" aria-hidden="true">↥</span>
+          <strong id="file-label">Перетащите аудио сюда</strong>
+          <span>или нажмите для выбора · MP3, WAV, M4A, OGG · до 100 МБ</span>
+        </label>
+        <div class="form-grid">
+          <label class="field"><span>Название протокола</span><input name="title" value="Протокол совещания" maxlength="150"></label>
+          <label class="field"><span>Имена говорящих <small>необязательно, JSON</small></span><input name="speakers" placeholder='{"SPEAKER_00":"Асхат Ерланович"}'></label>
+        </div>
+        <div class="form-footer"><p><span aria-hidden="true">ⓘ</span> Перед записью уведомите участников и получите согласие.</p><button class="button primary" type="submit"><span>Создать протокол</span><b aria-hidden="true">→</b></button></div>
+      </form>
+    </section>
+
+    <aside class="side-stack">
+      <section class="panel demo-panel" aria-labelledby="demo-title">
+        <div class="section-heading compact"><div><span class="section-kicker">Быстрый старт</span><h2 id="demo-title">Демо без моделей</h2></div><span class="pulse-dot" title="Сервер доступен"></span></div>
+        <p>Проверьте полный сценарий на предоставленных эталонах.</p>
+        <div class="demo-buttons"><button class="demo-card" type="button" data-demo="1"><b>Совещание №1</b><span>Химия и безопасность</span><i>→</i></button><button class="demo-card" type="button" data-demo="2"><b>Совещание №2</b><span>Оперативные показатели</span><i>→</i></button></div>
+        <div id="health" class="health skeleton">Проверяем компоненты…</div>
+      </section>
+      <section class="panel history-panel" aria-labelledby="history-title">
+        <div class="section-heading compact"><div><span class="section-kicker">Рабочая область</span><h2 id="history-title">Последние протоколы</h2></div><button class="icon-button" id="refresh-history" type="button" title="Обновить список" aria-label="Обновить список">↻</button></div>
+        <div id="history" class="history-list"><div class="history-skeleton"></div><div class="history-skeleton short"></div></div>
+      </section>
+    </aside>
+
+    <section id="editor" class="panel editor-panel" aria-labelledby="editor-title" hidden>
+      <div class="editor-topbar">
+        <div><span class="section-kicker">Рабочий черновик</span><h2 id="editor-title">Редактор протокола</h2></div>
+        <div id="downloads" class="download-group" aria-label="Экспорт"></div>
+      </div>
+      <div id="metrics" class="metrics"></div>
+      <div class="editor-grid">
+        <label class="field"><span>Название</span><input id="report-title" maxlength="150"></label>
+        <label class="field summary-field"><span>Краткое саммари <small>один пункт на строку</small></span><textarea id="summary" rows="4"></textarea></label>
+      </div>
+      <div class="actions-header"><div><h3>Поручения</h3><p>Проверьте формулировки, ответственных и сроки.</p></div><button class="button secondary" id="add-action" type="button">＋ Добавить</button></div>
+      <div id="actions" class="action-list"></div>
+      <div class="savebar"><div id="save-status" class="save-message" role="status"></div><button class="button primary" id="save-report" type="button"><span>Сохранить изменения</span><b aria-hidden="true">✓</b></button></div>
+      <details class="transcript"><summary><span>Транскрипт совещания</span><small id="transcript-count"></small></summary><div id="transcript"></div></details>
+    </section>
+  </main>
+  <div id="toast-region" class="toast-region" aria-live="polite"></div>
+  <div id="loading" class="loading-overlay" hidden><div class="loader"></div><strong id="loading-title">Обрабатываем запись</strong><span id="loading-text">Это может занять несколько минут</span></div>
+</body>
 </html>

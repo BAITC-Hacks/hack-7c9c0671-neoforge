@@ -1,6 +1,7 @@
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from fastapi.testclient import TestClient
 
@@ -93,6 +94,22 @@ class MeetingAssistantApiTests(unittest.TestCase):
         )
         self.assertEqual(response.status_code, 400)
         self.assertIn("does not match", response.json()["detail"])
+
+    def test_audio_processing_job_completes_and_exposes_report(self):
+        wav_header = b"RIFF" + (36).to_bytes(4, "little") + b"WAVEfmt " + b"\x00" * 32
+        with patch.object(main, "transcribe", return_value=[]), patch.object(main, "diarize", return_value=[]):
+            response = self.client.post(
+                "/process",
+                data={"title": "Фоновая обработка", "speakers": "{}"},
+                files={"audio": ("meeting.wav", wav_header, "audio/wav")},
+            )
+        self.assertEqual(response.status_code, 202)
+        job = self.client.get(f"/jobs/{response.json()['id']}")
+        self.assertEqual(job.status_code, 200)
+        self.assertEqual(job.json()["status"], "completed")
+        report = self.client.get(f"/reports/{response.json()['id']}")
+        self.assertEqual(report.status_code, 200)
+        self.assertEqual(report.json()["report"]["title"], "Фоновая обработка")
 
     def test_duplicate_action_ids_are_rejected(self):
         created = self.client.post("/demo/1").json()

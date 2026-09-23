@@ -10,8 +10,7 @@ from pathlib import Path
 from threading import RLock
 from typing import Literal
 
-from fastapi import FastAPI, File, Form, HTTPException, Query, Request, UploadFile
-from fastapi.concurrency import run_in_threadpool
+from fastapi import BackgroundTasks, FastAPI, File, Form, HTTPException, Query, Request, UploadFile
 from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.responses import FileResponse, HTMLResponse
 from fastapi.staticfiles import StaticFiles
@@ -75,6 +74,52 @@ def _looks_like_audio(path: Path, suffix: str) -> bool:
         ".mp3": lambda value: value.startswith(b"ID3") or (len(value) >= 2 and value[0] == 0xFF and value[1] & 0xE0 == 0xE0),
     }
     return bool(header) and checks[suffix](header)
+
+
+def _job_path(ident: str) -> Path:
+    if not re.fullmatch(r"[a-f0-9]{32}", ident):
+        raise HTTPException(404)
+    return OUT / "_jobs" / f"{ident}.json"
+
+
+def _write_job(ident: str, **values) -> dict:
+    path = _job_path(ident)
+    path.parent.mkdir(exist_ok=True)
+    with REPORT_WRITE_LOCK:
+        current = {}
+        if path.is_file():
+            try:
+                current = json.loads(path.read_text(encoding="utf-8"))
+            except json.JSONDecodeError:
+                current = {}
+        job = {**current, **values, "id": ident, "updated_at": _now()}
+        temporary = path.with_suffix(".json.tmp")
+        temporary.write_text(json.dumps(job, ensure_ascii=False, indent=2), encoding="utf-8")
+        temporary.replace(path)
+        return job
+
+
+def _run_audio_job(ident: str, input_path: Path, title: str, mapping: dict[str, str]) -> None:
+    target = OUT / ident
+    try:
+        _write_job(ident, status="processing", stage="transcription", progress=20)
+        segments = transcribe(input_path, Path(os.getenv("ASR_MODEL_DIR", "models/faster-whisper-small")))
+        _write_job(ident, stage="diarization", progress=55)
+        segments = diarize(segments, input_path, Path(os.getenv("DIARIZATION_MODEL_DIR", "models/pyannote-speaker-diarization")))
+        for segment in segments:
+            segment.speaker = mapping.get(segment.speaker, segment.speaker)
+        _write_job(ident, stage="report", progress=80)
+        report = make_report(segments, title)
+        report["source"] = "local_audio"
+        report["schema_version"] = 2
+        report["updated_at"] = report["created_at"]
+        write_report(report, target)
+        _write_job(ident, status="completed", stage="completed", progress=100, report_id=ident)
+    except Exception as exc:
+        shutil.rmtree(target, ignore_errors=True)
+        _write_job(ident, status="failed", stage="failed", progress=100, error=_safe_error(exc))
+    finally:
+        input_path.unlink(missing_ok=True)
 
 
 def write_report(report: dict, target: Path) -> None:
@@ -200,6 +245,17 @@ def get_report(ident: str) -> dict:
     return {"id": ident, "report": _load_report(ident)}
 
 
+@app.get("/jobs/{ident}")
+def get_job(ident: str) -> dict:
+    path = _job_path(ident)
+    if not path.is_file():
+        raise HTTPException(404)
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as exc:
+        raise HTTPException(500, "Stored job is damaged") from exc
+
+
 @app.put("/reports/{ident}")
 def update_report(ident: str, update: ReportUpdate) -> dict:
     """Save secretary-reviewed fields while preserving evidence and transcript."""
@@ -241,8 +297,8 @@ def demo(meeting_id: int) -> dict:
         raise HTTPException(500, _safe_error(exc)) from exc
 
 
-@app.post("/process")
-async def process(audio: UploadFile = File(...), title: str = Form("Протокол совещания"), speakers: str = Form("{}")) -> dict:
+@app.post("/process", status_code=202)
+async def process(background_tasks: BackgroundTasks, audio: UploadFile = File(...), title: str = Form("Протокол совещания"), speakers: str = Form("{}")) -> dict:
     suffix = Path(audio.filename or "").suffix.lower()
     if suffix not in (".mp3", ".wav", ".m4a", ".ogg"):
         raise HTTPException(400, "Supported formats: MP3, WAV, M4A, OGG")
@@ -269,24 +325,15 @@ async def process(audio: UploadFile = File(...), title: str = Form("Проток
                 stream.write(chunk)
         if not _looks_like_audio(input_path, suffix):
             raise HTTPException(400, "File content does not match its audio extension")
-        segments = await run_in_threadpool(transcribe, input_path, Path(os.getenv("ASR_MODEL_DIR", "models/faster-whisper-small")))
-        segments = await run_in_threadpool(diarize, segments, input_path, Path(os.getenv("DIARIZATION_MODEL_DIR", "models/pyannote-speaker-diarization")))
-        for segment in segments:
-            segment.speaker = mapping.get(segment.speaker, segment.speaker)
-        report = make_report(segments, title)
-        report["source"] = "local_audio"
-        report["schema_version"] = 2
-        report["updated_at"] = report["created_at"]
-        await run_in_threadpool(write_report, report, target)
-        return {"id": ident, "report": report}
+        job = _write_job(ident, status="queued", stage="upload", progress=5, created_at=_now())
+        background_tasks.add_task(_run_audio_job, ident, input_path, title, mapping)
+        return job
     except HTTPException:
         shutil.rmtree(target, ignore_errors=True)
         raise
     except Exception as exc:
         shutil.rmtree(target, ignore_errors=True)
         raise HTTPException(422, _safe_error(exc)) from exc
-    finally:
-        input_path.unlink(missing_ok=True)
 
 
 @app.get("/download/{ident}/{kind}")

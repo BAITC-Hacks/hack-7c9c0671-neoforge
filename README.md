@@ -21,6 +21,7 @@
 - мини-дашборд по всем протоколам, поиск и фильтрация поручений по статусу;
 - проверка реального формата аудио по сигнатуре файла, а не только по расширению;
 - неблокирующий запуск тяжёлых ASR/диаризации, gzip и защитные HTTP-заголовки;
+- фоновая очередь обработки с сохраняемым job-статусом и прогрессом по этапам;
 - поиск и пагинация истории через параметры `q`, `limit` и `offset`;
 - локальная история последних 50 протоколов и повторное открытие результата;
 - атомарное обновление JSON/PDF/DOCX без частично записанных файлов;
@@ -95,7 +96,7 @@ python demo.py
 
 Health check: `GET http://127.0.0.1:8000/health`.
 
-Основные API endpoints: `POST /process`, `POST /demo/{id}`, `GET /dashboard`, `GET /reports?q=&limit=50&offset=0`, `GET /reports/{id}`, `PUT /reports/{id}` и `GET /download/{id}/{kind}`. PUT принимает версию `revision`, только проверяемые поля и сохраняет исходный evidence и транскрипт.
+Основные API endpoints: `POST /process`, `GET /jobs/{id}`, `POST /demo/{id}`, `GET /dashboard`, `GET /reports?q=&limit=50&offset=0`, `GET /reports/{id}`, `PUT /reports/{id}` и `GET /download/{id}/{kind}`. `POST /process` возвращает `202 Accepted`, после чего клиент следит за job до готовности. PUT принимает версию `revision`, только проверяемые поля и сохраняет исходный evidence и транскрипт.
 
 ## Технологии, данные и приватность
 

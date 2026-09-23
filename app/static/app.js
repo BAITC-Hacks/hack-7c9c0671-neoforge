@@ -35,6 +35,8 @@ function showLoading(title, text) {
   $('#loading-title').textContent = title;
   $('#loading-text').textContent = text;
   loading.hidden = false;
+  $('#job-progress-bar').style.width = '0%';
+  $('#job-progress-value').textContent = '';
   document.body.style.overflow = 'hidden';
 }
 
@@ -83,6 +85,30 @@ async function loadHealth() {
     $('#health').classList.remove('skeleton');
     $('#health').innerHTML = '<span class="health-chip warn">○ Сервер недоступен</span>';
   }
+}
+
+const sleep = milliseconds => new Promise(resolve => window.setTimeout(resolve, milliseconds));
+
+async function waitForJob(job) {
+  const stageLabels = {
+    upload: 'Файл серверге жүктелді · файл загружен',
+    transcription: 'Распознаём речь локально',
+    diarization: 'Разделяем реплики по говорящим',
+    report: 'Формируем поручения и экспорт',
+    completed: 'Протокол готов',
+  };
+  let state = job;
+  for (let attempt = 0; attempt < 3600; attempt += 1) {
+    const progress = Math.max(0, Math.min(100, Number(state.progress) || 0));
+    $('#job-progress-bar').style.width = `${progress}%`;
+    $('#job-progress-value').textContent = `${progress}%`;
+    $('#loading-text').textContent = stageLabels[state.stage] || 'Обрабатываем запись локально';
+    if (state.status === 'completed') return fetchJson(`/reports/${state.report_id || state.id}`);
+    if (state.status === 'failed') throw new Error(state.error || 'Не удалось обработать запись');
+    await sleep(1000);
+    state = await fetchJson(`/jobs/${state.id}`);
+  }
+  throw new Error('Превышено время ожидания обработки');
 }
 
 function formatBytes(bytes) {
@@ -278,7 +304,8 @@ $('#upload').addEventListener('submit', async event => {
   const data = new FormData(event.currentTarget);
   showLoading('Обрабатываем запись', 'ASR, диаризация и извлечение поручений');
   try {
-    renderReport(await fetchJson('/process', {method: 'POST', body: data}));
+    const job = await fetchJson('/process', {method: 'POST', body: data});
+    renderReport(await waitForJob(job));
     await loadHistory();
     await loadDashboard();
     toast('Аудио обработано локально');
